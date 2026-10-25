@@ -30,20 +30,27 @@ QueryClient.shared.cache = MMKVQueryCache()
 import SwiftQuery
 import Alamofire
 
-extension DataRequest: QueryCancellable {}
-
 struct AlamofireNetworking: QueryNetworking {
+    private struct Cancellable: QueryCancellable {
+        let request: DataRequest
+        func cancel() { request.cancel() }
+    }
+
     func perform(_ request: QueryRequest, completion: @escaping (QueryResponse) -> Void) -> QueryCancellable {
         let manager = APIManager.shared
-        let method = HTTPMethod(rawValue: request.method)
+        let method = HTTPMethod(rawValue: request.method.uppercased())
         let encoder: ParameterEncoder = method == .get ? .urlEncodedForm : .json
-        return manager.sessionManager
+        let dataRequest = manager.sessionManager
             .request(request.url, method: method, parameters: request.parameters, encoder: encoder, headers: manager.header)
             .validate()
             .responseData { completion(QueryResponse(statusCode: $0.response?.statusCode, data: $0.data)) }
+            .resume()
+        return Cancellable(request: dataRequest)
     }
 }
 ```
+
+(`DataRequest.cancel()` returns `Self`, so it can't conform to `QueryCancellable` directly; wrap it.)
 
 ### MMKV adapter
 
@@ -78,5 +85,5 @@ Every instance also takes `client:` to use a custom `QueryClient` (handy in test
 - Delete `Query.swift`, `InfiniteQuery.swift`, `Mutation.swift` and `AnyEncodable`; keep `EventQuery.swift`, `OrderQuery.swift`, ... (just add `import SwiftQuery`).
 - `state.statusCode` and `MutationError.statusCode` are now `Int?` (`nil` = no response / undecodable body) instead of `APIStatusCode`.
 - `Mutation(method:)` takes a `String` (`"POST"`, `"PUT"`, ...) instead of Alamofire's `HTTPMethod`.
-- `BaseResponse` / `BasePaginationResponse` / `Links` / `Meta` now live in the library as structs. Remove the app's versions; subclasses such as `HelperEventListModel: BasePaginationResponse<...>` must be changed since structs can't be subclassed.
+- `BaseResponse` / `BasePaginationResponse` (open classes, so `class FooModel: BaseResponse<Bar>` keeps working), `Links` and `Meta` now live in the library. Remove the app's versions and add `import SwiftQuery` to files that use them.
 - Success is any 2xx (previously only `200`).
