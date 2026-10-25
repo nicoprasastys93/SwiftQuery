@@ -8,17 +8,41 @@
 import Foundation
 
 /// `{ "type": ..., "message": ..., "data": ... }`
-public struct BaseResponse<T: Decodable>: Decodable {
+/// Open so app models can subclass it (`class FooModel: BaseResponse<Bar>`).
+open class BaseResponse<T: Decodable>: Decodable {
     public var type: String?
     public var message: String?
     public var data: T?
+
+    private enum CodingKeys: CodingKey {
+        case type, message, data
+    }
+
+    public required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decodeIfPresent(String.self, forKey: .type)
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        data = try container.decodeIfPresent(T.self, forKey: .data)
+    }
 }
 
 /// Laravel-style paginated response: `{ "data": [...], "links": {...}, "meta": {...} }`
-public struct BasePaginationResponse<T: Decodable>: Decodable {
+/// Open so app models can subclass it (`class FooListModel: BasePaginationResponse<Bar>`).
+open class BasePaginationResponse<T: Decodable>: Decodable {
     public var data: [T]?
     public var links: Links?
     public var meta: Meta?
+
+    private enum CodingKeys: CodingKey {
+        case data, links, meta
+    }
+
+    public required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        data = try container.decodeIfPresent([T].self, forKey: .data)
+        links = try container.decodeIfPresent(Links.self, forKey: .links)
+        meta = try container.decodeIfPresent(Meta.self, forKey: .meta)
+    }
 }
 
 public struct Links: Decodable {
