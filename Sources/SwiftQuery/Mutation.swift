@@ -3,7 +3,8 @@
 //  SwiftQuery
 //
 //  Swift take on useMutation from @tanstack/react-query
-//  (response shaped like BaseResponse<Item>). Nothing runs until `mutate(_:)` is called.
+//  (response shaped like BaseResponse<Item>, or the bare Item with `envelope: false`).
+//  Nothing runs until `mutate(_:)` is called.
 //
 
 import Foundation
@@ -48,6 +49,7 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
     private let client: QueryClient
     private let url: () -> String?
     private let method: String
+    private let envelope: Bool
     private var request: QueryCancellable?
     /// Invalidates an in-flight response after reset
     private var generation = 0
@@ -55,11 +57,14 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
     /// - Parameters:
     ///   - url: Endpoint URL, evaluated on every `mutate`.
     ///   - method: HTTP method, POST by default.
+    ///   - envelope: `true` (default) decodes `Item` from the `data` key of a `BaseResponse`.
+    ///     Pass `false` when the body is the `Item` itself, with no `{ type, message, data }` wrapper.
     ///   - client: Networking provider.
-    public init(url: @escaping () -> String?, method: String = "POST", client: QueryClient = .shared) {
+    public init(url: @escaping () -> String?, method: String = "POST", envelope: Bool = true, client: QueryClient = .shared) {
         self.client = client
         self.url = url
         self.method = method
+        self.envelope = envelope
     }
     deinit {
         request?.cancel()
@@ -84,7 +89,7 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
             let body = response.data
 
             if isSuccess {
-                let item = body.flatMap { try? JSONDecoder().decode(BaseResponse<Item>.self, from: $0).data }
+                let item = body.flatMap { self.decodeItem(from: $0) }
                 self.state = State(data: item, error: nil, status: .success)
             } else {
                 let info = body.flatMap { try? JSONDecoder().decode(ErrorBody.self, from: $0) }
@@ -100,6 +105,14 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
         request?.cancel()
         request = nil
         state = State()
+    }
+}
+private extension Mutation {
+    func decodeItem(from body: Data) -> Item? {
+        if envelope {
+            return try? JSONDecoder().decode(BaseResponse<Item>.self, from: body).data
+        }
+        return try? JSONDecoder().decode(Item.self, from: body)
     }
 }
 private struct ErrorBody: Decodable {

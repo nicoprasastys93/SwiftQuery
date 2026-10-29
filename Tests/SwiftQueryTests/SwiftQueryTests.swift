@@ -80,6 +80,15 @@ final class SwiftQueryTests: XCTestCase {
         XCTAssertEqual(m.state.error?.message, "bad")
     }
 
+    func testMutationWithoutEnvelope() {
+        let net = MockNetworking()
+        net.responses = [QueryResponse(statusCode: 200, data: json(#"{"id":5}"#))]
+        let m = Mutation<Todo, Payload>(url: { "https://x.test/m" }, envelope: false, client: client(net))
+        m.mutate(Payload(name: "a"))
+        XCTAssertTrue(m.state.isSuccess)
+        XCTAssertEqual(m.state.data, Todo(id: 5))
+    }
+
     func testQueryItemsFlattening() {
         struct P: Encodable { var page: Int; var q: String; var tags: [String]; var active: Bool }
         let items = URLSessionNetworking.queryItems(from: P(page: 2, q: "a b", tags: ["x", "y"], active: true))
