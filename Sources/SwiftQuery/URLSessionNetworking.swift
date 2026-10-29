@@ -25,7 +25,7 @@ public final class URLSessionNetworking: QueryNetworking {
             return NoopCancellable()
         }
         let isQueryMethod = request.method.uppercased() == "GET"
-        if isQueryMethod, let parameters = request.parameters {
+        if isQueryMethod, request.encoding == .json, let parameters = request.parameters {
             let items = Self.queryItems(from: parameters)
             if !items.isEmpty {
                 components.queryItems = (components.queryItems ?? []) + items
@@ -39,7 +39,11 @@ public final class URLSessionNetworking: QueryNetworking {
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = request.method.uppercased()
         headers().forEach { urlRequest.setValue($1, forHTTPHeaderField: $0) }
-        if !isQueryMethod, let parameters = request.parameters {
+        if request.encoding == .multipart {
+            let boundary = "SwiftQuery.\(UUID().uuidString)"
+            urlRequest.httpBody = request.multipartParts.multipartBody(boundary: boundary)
+            urlRequest.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        } else if !isQueryMethod, let parameters = request.parameters {
             urlRequest.httpBody = try? JSONEncoder().encode(parameters)
             urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }

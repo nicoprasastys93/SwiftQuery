@@ -50,6 +50,7 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
     private let url: () -> String?
     private let method: String
     private let envelope: Bool
+    private let encoding: QueryBodyEncoding
     private var request: QueryCancellable?
     /// Invalidates an in-flight response after reset
     private var generation = 0
@@ -59,12 +60,14 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
     ///   - method: HTTP method, POST by default.
     ///   - envelope: `true` (default) decodes `Item` from the `data` key of a `BaseResponse`.
     ///     Pass `false` when the body is the `Item` itself, with no `{ type, message, data }` wrapper.
+    ///   - encoding: `.json` (default) or `.multipart`. Multipart requires `Variables` to conform to `QueryMultipartEncodable`.
     ///   - client: Networking provider.
-    public init(url: @escaping () -> String?, method: String = "POST", envelope: Bool = true, client: QueryClient = .shared) {
+    public init(url: @escaping () -> String?, method: String = "POST", envelope: Bool = true, encoding: QueryBodyEncoding = .json, client: QueryClient = .shared) {
         self.client = client
         self.url = url
         self.method = method
         self.envelope = envelope
+        self.encoding = encoding
     }
     deinit {
         request?.cancel()
@@ -76,12 +79,25 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
         guard !state.isPending else { return }
         guard let url = url(), url != "" else { return }
 
+        let queryRequest: QueryRequest
+        switch encoding {
+        case .json:
+            queryRequest = QueryRequest(url: url, method: method, parameters: AnyEncodable(variables))
+        case .multipart:
+            guard let multipart = variables as? QueryMultipartEncodable else {
+                assertionFailure("Mutation with encoding .multipart requires Variables to conform to QueryMultipartEncodable")
+                state = State(data: nil, error: MutationError(statusCode: nil, type: nil, message: nil), status: .error)
+                return
+            }
+            queryRequest = QueryRequest(url: url, method: method, encoding: .multipart, multipartParts: multipart.multipartParts())
+        }
+
         generation += 1
         let current = generation
 
         state = State(data: nil, error: nil, status: .pending)
 
-        request = client.networking.perform(QueryRequest(url: url, method: method, parameters: AnyEncodable(variables))) { [weak self] response in
+        request = client.networking.perform(queryRequest) { [weak self] response in
             guard let self = self, current == self.generation else { return }
             self.request = nil
 

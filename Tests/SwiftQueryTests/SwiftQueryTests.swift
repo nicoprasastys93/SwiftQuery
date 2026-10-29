@@ -89,6 +89,33 @@ final class SwiftQueryTests: XCTestCase {
         XCTAssertEqual(m.state.data, Todo(id: 5))
     }
 
+    func testMutationMultipart() {
+        struct Upload: Encodable, QueryMultipartEncodable {
+            var name: String
+            func multipartParts() -> [QueryMultipartPart] {
+                [QueryMultipartPart(name: "name", value: name)!,
+                 QueryMultipartPart(name: "photo", data: Data([1, 2]), fileName: "a.jpg", mimeType: "image/jpeg")]
+            }
+        }
+        let net = MockNetworking()
+        net.responses = [QueryResponse(statusCode: 200, data: json(#"{"id":7}"#))]
+        let m = Mutation<Todo, Upload>(url: { "https://x.test/u" }, method: "POST", envelope: false, encoding: .multipart, client: client(net))
+        m.mutate(Upload(name: "n"))
+        XCTAssertTrue(m.state.isSuccess)
+        let sent = net.requests.last
+        XCTAssertEqual(sent?.encoding, .multipart)
+        XCTAssertNil(sent?.parameters)
+        XCTAssertEqual(sent?.multipartParts.map(\.name), ["name", "photo"])
+        XCTAssertEqual(sent?.multipartParts.last?.fileName, "a.jpg")
+    }
+
+    func testMultipartBody() {
+        let parts = [QueryMultipartPart(name: "a", value: "1")!,
+                     QueryMultipartPart(name: "f", data: Data("X".utf8), fileName: "x.txt", mimeType: "text/plain")]
+        let body = String(decoding: parts.multipartBody(boundary: "B"), as: UTF8.self)
+        XCTAssertEqual(body, "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--B\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x.txt\"\r\nContent-Type: text/plain\r\n\r\nX\r\n--B--\r\n")
+    }
+
     func testQueryItemsFlattening() {
         struct P: Encodable { var page: Int; var q: String; var tags: [String]; var active: Bool }
         let items = URLSessionNetworking.queryItems(from: P(page: 2, q: "a b", tags: ["x", "y"], active: true))

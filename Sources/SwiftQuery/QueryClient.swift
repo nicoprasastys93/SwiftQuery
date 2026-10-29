@@ -12,11 +12,16 @@ public struct QueryRequest {
     public var url: String
     public var method: String
     public var parameters: AnyEncodable?
+    public var encoding: QueryBodyEncoding
+    /// Set when `encoding == .multipart`; `parameters` is `nil` in that case.
+    public var multipartParts: [QueryMultipartPart]
 
-    public init(url: String, method: String, parameters: AnyEncodable? = nil) {
+    public init(url: String, method: String, parameters: AnyEncodable? = nil, encoding: QueryBodyEncoding = .json, multipartParts: [QueryMultipartPart] = []) {
         self.url = url
         self.method = method
         self.parameters = parameters
+        self.encoding = encoding
+        self.multipartParts = multipartParts
     }
 }
 

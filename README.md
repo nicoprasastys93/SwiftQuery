@@ -84,6 +84,26 @@ query.fetch()
 let mutation = Mutation<Profile, ProfileParams>(url: { ProfileService.updateURL() }, method: "PUT", envelope: false)
 ```
 
+### File upload (multipart/form-data)
+
+Make the variables conform to `QueryMultipartEncodable` and pass `encoding: .multipart`:
+
+```swift
+extension ParamProfileUpdateModel: QueryMultipartEncodable {
+    func multipartParts() -> [QueryMultipartPart] {
+        [QueryMultipartPart(name: "name", value: name),
+         QueryMultipartPart(name: "phone_number", value: phone_number),
+         id_card_image.map { QueryMultipartPart(name: "id_card_image", data: $0, fileName: id_card_name, mimeType: "image/jpeg") }]
+            .compactMap { $0 }
+    }
+}
+
+let mutation = Mutation<ProfileModel, ParamProfileUpdateModel>(url: { ProfileService.updateURL() }, encoding: .multipart)
+```
+
+`QueryMultipartPart(name:value:)` returns `nil` for a `nil` value, so optional fields are skipped with `compactMap`.
+Custom `QueryNetworking` implementations must handle `request.encoding == .multipart` by sending `request.multipartParts`.
+
 Every instance also takes `client:` to use a custom `QueryClient` (handy in tests).
 
 ## Migrating from loyalty_ios
