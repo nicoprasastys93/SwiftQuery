@@ -78,6 +78,12 @@ query.statePublisher.sink { state in /* state.items, state.isFetching, ... */ }
 query.fetch()
 ```
 
+`Mutation` expects `{ "type", "message", "data": {...} }` by default. If the endpoint returns the bare object, pass `envelope: false`:
+
+```swift
+let mutation = Mutation<Profile, ProfileParams>(url: { ProfileService.updateURL() }, method: "PUT", envelope: false)
+```
+
 Every instance also takes `client:` to use a custom `QueryClient` (handy in tests).
 
 ## Migrating from loyalty_ios
