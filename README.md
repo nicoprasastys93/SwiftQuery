@@ -106,10 +106,3 @@ Custom `QueryNetworking` implementations must handle `request.encoding == .multi
 
 Every instance also takes `client:` to use a custom `QueryClient` (handy in tests).
 
-## Migrating from loyalty_ios
-
-- Delete `Query.swift`, `InfiniteQuery.swift`, `Mutation.swift` and `AnyEncodable`; keep `EventQuery.swift`, `OrderQuery.swift`, ... (just add `import SwiftQuery`).
-- `state.statusCode` and `MutationError.statusCode` are now `Int?` (`nil` = no response / undecodable body) instead of `APIStatusCode`.
-- `Mutation(method:)` takes a `String` (`"POST"`, `"PUT"`, ...) instead of Alamofire's `HTTPMethod`.
-- `BaseResponse` / `BasePaginationResponse` (open classes, so `class FooModel: BaseResponse<Bar>` keeps working), `Links` and `Meta` now live in the library. Remove the app's versions and add `import SwiftQuery` to files that use them.
-- Success is any 2xx (previously only `200`).
