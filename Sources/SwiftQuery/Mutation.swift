@@ -3,7 +3,7 @@
 //  SwiftQuery
 //
 //  Swift take on useMutation from @tanstack/react-query
-//  (response shaped like BaseResponse<Item>, or the bare Item with `envelope: false`).
+//  (BaseResponse<Item> by default, any QueryEnvelope via `envelope:`, e.g. `Bare<Item>.self`).
 //  Nothing runs until `mutate(_:)` is called.
 //
 
@@ -49,7 +49,7 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
     private let client: QueryClient
     private let url: () -> String?
     private let method: String
-    private let envelope: Bool
+    private let decode: (Data) -> Item?
     private let encoding: QueryBodyEncoding
     private var request: QueryCancellable?
     /// Invalidates an in-flight response after reset
@@ -58,16 +58,30 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
     /// - Parameters:
     ///   - url: Endpoint URL, evaluated on every `mutate`.
     ///   - method: HTTP method, POST by default.
-    ///   - envelope: `true` (default) decodes `Item` from the `data` key of a `BaseResponse`.
-    ///     Pass `false` when the body is the `Item` itself, with no `{ type, message, data }` wrapper.
+    ///   - envelope: Shape of the success body, e.g. `Bare<Item>.self` when the body is the `Item` itself.
     ///   - encoding: `.json` (default) or `.multipart`. Multipart requires `Variables` to conform to `QueryMultipartEncodable`.
     ///   - client: Networking provider.
-    public init(url: @escaping () -> String?, method: String = "POST", envelope: Bool = true, encoding: QueryBodyEncoding = .json, client: QueryClient = .shared) {
+    public init<Envelope: QueryEnvelope>(url: @escaping () -> String?, method: String = "POST", envelope: Envelope.Type, encoding: QueryBodyEncoding = .json, client: QueryClient = .shared) where Envelope.Item == Item {
         self.client = client
         self.url = url
         self.method = method
-        self.envelope = envelope
+        self.decode = { try? JSONDecoder().decode(Envelope.self, from: $0).item }
         self.encoding = encoding
+    }
+
+    /// Success body shaped like `BaseResponse<Item>`.
+    public convenience init(url: @escaping () -> String?, method: String = "POST", encoding: QueryBodyEncoding = .json, client: QueryClient = .shared) {
+        self.init(url: url, method: method, envelope: BaseResponse<Item>.self, encoding: encoding, client: client)
+    }
+
+    /// `envelope: false` = body is the bare `Item`.
+    @available(*, deprecated, message: "Use envelope: Bare<Item>.self (false) or omit it (true)")
+    public convenience init(url: @escaping () -> String?, method: String = "POST", envelope: Bool, encoding: QueryBodyEncoding = .json, client: QueryClient = .shared) {
+        if envelope {
+            self.init(url: url, method: method, envelope: BaseResponse<Item>.self, encoding: encoding, client: client)
+        } else {
+            self.init(url: url, method: method, envelope: Bare<Item>.self, encoding: encoding, client: client)
+        }
     }
     deinit {
         request?.cancel()
@@ -105,7 +119,7 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
             let body = response.data
 
             if isSuccess {
-                let item = body.flatMap { self.decodeItem(from: $0) }
+                let item = body.flatMap(self.decode)
                 self.state = State(data: item, error: nil, status: .success)
             } else {
                 let info = body.flatMap { try? JSONDecoder().decode(ErrorBody.self, from: $0) }
@@ -121,14 +135,6 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
         request?.cancel()
         request = nil
         state = State()
-    }
-}
-private extension Mutation {
-    func decodeItem(from body: Data) -> Item? {
-        if envelope {
-            return try? JSONDecoder().decode(BaseResponse<Item>.self, from: body).data
-        }
-        return try? JSONDecoder().decode(Item.self, from: body)
     }
 }
 private struct ErrorBody: Decodable {

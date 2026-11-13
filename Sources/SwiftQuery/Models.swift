@@ -3,6 +3,7 @@
 //  SwiftQuery
 //
 //  Response envelopes used by Query, InfiniteQuery and Mutation.
+//  Other response shapes plug in through QueryEnvelope / QueryPageEnvelope.
 //
 
 import Foundation
@@ -61,6 +62,76 @@ public struct Meta: Decodable {
     public var per_page: Int?
     public var to: Int?
     public var total: Int?
+}
+
+// MARK: - Envelopes
+// Tell Query / InfiniteQuery / Mutation where the payload sits in a response body.
+
+/// Wraps a single resource. `item` is what `Query` / `Mutation` expose as `state.data`.
+///
+///     struct Payload<T: Decodable>: QueryEnvelope {   // { "success": true, "payload": {...} }
+///         let payload: T?
+///         var item: T? { payload }
+///     }
+public protocol QueryEnvelope: Decodable {
+    associatedtype Item
+    var item: Item? { get }
+}
+
+/// Wraps one page of a list, used by `InfiniteQuery`.
+///
+///     struct CursorPage<T: Decodable>: QueryPageEnvelope {   // { "results": [...], "next_cursor": "abc" }
+///         let results: [T]
+///         let next_cursor: String?
+///         var items: [T] { results }
+///         func nextPageURL(currentURL: String) -> String? {
+///             next_cursor.map { queryURL(currentURL, setting: "cursor", to: $0) }
+///         }
+///     }
+public protocol QueryPageEnvelope: Decodable {
+    associatedtype Item
+    var items: [Item] { get }
+    /// URL of the next page, `nil` on the last page.
+    /// `currentURL` is the URL this page was loaded from, to build cursor / page-number URLs with `queryURL(_:setting:to:)`.
+    func nextPageURL(currentURL: String) -> String?
+}
+
+/// `{ "type", "message", "data": {...} }` — the default for `Query` and `Mutation`.
+extension BaseResponse: QueryEnvelope {
+    public var item: T? { return data }
+}
+
+/// Laravel pagination — the default for `InfiniteQuery`.
+extension BasePaginationResponse: QueryPageEnvelope {
+    public var items: [T] { return data ?? [] }
+    public func nextPageURL(currentURL: String) -> String? { return links?.next }
+}
+
+/// The body is the item itself, with no wrapper: `{ "id": 1 }` or `[...]`.
+public struct Bare<T: Decodable>: QueryEnvelope {
+    public let item: T?
+    public init(from decoder: Decoder) throws {
+        item = try T(from: decoder)
+    }
+}
+
+/// The body is a plain JSON array `[...]`, loaded as a single page.
+public struct BareList<T: Decodable>: QueryPageEnvelope {
+    public let items: [T]
+    public init(from decoder: Decoder) throws {
+        items = try [T](from: decoder)
+    }
+    public func nextPageURL(currentURL: String) -> String? { return nil }
+}
+
+/// Returns `url` with the query item `name=value` set, replacing an existing one
+/// (`queryURL("https://x/list?page=1", setting: "page", to: "2")` → `https://x/list?page=2`).
+public func queryURL(_ url: String, setting name: String, to value: String) -> String {
+    guard var components = URLComponents(string: url) else { return url }
+    var items = (components.queryItems ?? []).filter { $0.name != name }
+    items.append(URLQueryItem(name: name, value: value))
+    components.queryItems = items
+    return components.string ?? url
 }
 
 /// Type erasure so an `Encodable` existential can be stored and passed as a generic parameter.

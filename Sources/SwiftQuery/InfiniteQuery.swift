@@ -2,7 +2,8 @@
 //  InfiniteQuery.swift
 //  SwiftQuery
 //
-//  Swift take on useInfiniteQuery from @tanstack/react-query.
+//  Swift take on useInfiniteQuery from @tanstack/react-query
+//  (BasePaginationResponse<Item> by default, any QueryPageEnvelope via `envelope:`).
 //  Handles paged fetching (first / next), refetch, in-memory pages,
 //  stale-while-revalidate via QueryCache and request cancellation.
 //
@@ -50,6 +51,7 @@ public final class InfiniteQuery<Item: Decodable> {
     private let firstPageURL: () -> String?
     private let parameters: AnyEncodable?
     private let cacheKey: String?
+    private let decode: (Data) -> Page<Item>?
     private var nextURL: String?
     private var request: QueryCancellable?
     /// Invalidates in-flight responses after refetch / reset / cancel
@@ -59,12 +61,22 @@ public final class InfiniteQuery<Item: Decodable> {
     ///   - firstPageURL: URL of the first page, evaluated on every fetch / refetch.
     ///   - parameters: Query parameters sent with every page.
     ///   - cacheKey: When set, the first page response is persisted in the cache and shown instantly on the next `fetch()`.
+    ///   - envelope: Shape of a page, e.g. a custom cursor-based `QueryPageEnvelope`.
     ///   - client: Networking and cache provider.
-    public init(firstPageURL: @escaping () -> String?, parameters: Encodable? = nil, cacheKey: String? = nil, client: QueryClient = .shared) {
+    public init<Envelope: QueryPageEnvelope>(firstPageURL: @escaping () -> String?, parameters: Encodable? = nil, cacheKey: String? = nil, envelope: Envelope.Type, client: QueryClient = .shared) where Envelope.Item == Item {
         self.client = client
         self.firstPageURL = firstPageURL
         self.parameters = parameters.map(AnyEncodable.init)
         self.cacheKey = cacheKey.map { "infinite_query.\($0)" }
+        self.decode = { data in
+            guard let page = try? JSONDecoder().decode(Envelope.self, from: data) else { return nil }
+            return Page(items: page.items, nextURL: page.nextPageURL)
+        }
+    }
+
+    /// Laravel pagination, `BasePaginationResponse<Item>`.
+    public convenience init(firstPageURL: @escaping () -> String?, parameters: Encodable? = nil, cacheKey: String? = nil, client: QueryClient = .shared) {
+        self.init(firstPageURL: firstPageURL, parameters: parameters, cacheKey: cacheKey, envelope: BasePaginationResponse<Item>.self, client: client)
     }
     deinit {
         request?.cancel()
@@ -75,8 +87,8 @@ public final class InfiniteQuery<Item: Decodable> {
     public func fetch() {
         guard state.status == .idle || state.status == .error else { return }
         var newState = state
-        if let cached = cachedFirstPage() {
-            apply(cached, appending: false, placeholder: true, to: &newState)
+        if let cached = cachedFirstPage(), let url = firstPageURL() {
+            apply(cached, from: url, appending: false, placeholder: true, to: &newState)
         } else {
             newState.status = .loading
         }
@@ -149,7 +161,7 @@ private extension InfiniteQuery {
             newState.isRefetching = false
 
             if let code = response.statusCode, (200..<300).contains(code) {
-                guard let data = response.data, let page = try? JSONDecoder().decode(BasePaginationResponse<Item>.self, from: data) else {
+                guard let data = response.data, let page = self.decode(data) else {
                     self.fail(nil, in: &newState)
                     self.state = newState
                     return
@@ -157,7 +169,7 @@ private extension InfiniteQuery {
                 if firstPage, let cacheKey = self.cacheKey {
                     self.client.cache.set(data, forKey: cacheKey)
                 }
-                self.apply(page, appending: !firstPage, placeholder: false, to: &newState)
+                self.apply(page, from: url, appending: !firstPage, placeholder: false, to: &newState)
                 newState.statusCode = code
             } else {
                 self.fail(response.statusCode, in: &newState)
@@ -166,14 +178,14 @@ private extension InfiniteQuery {
         }
     }
 
-    func apply(_ page: BasePaginationResponse<Item>, appending: Bool, placeholder: Bool, to newState: inout State) {
-        let items = page.data ?? []
+    func apply(_ page: Page<Item>, from url: String, appending: Bool, placeholder: Bool, to newState: inout State) {
+        let items = page.items
         if appending {
             newState.pages.append(items)
         } else {
             newState.pages = [items]
         }
-        nextURL = page.links?.next
+        nextURL = page.nextURL(url)
         newState.hasNextPage = (nextURL ?? "") != ""
         newState.status = .success
         newState.statusCode = 200
@@ -189,8 +201,15 @@ private extension InfiniteQuery {
         }
     }
 
-    func cachedFirstPage() -> BasePaginationResponse<Item>? {
+    func cachedFirstPage() -> Page<Item>? {
         guard let cacheKey = cacheKey, let data = client.cache.data(forKey: cacheKey) else { return nil }
-        return try? JSONDecoder().decode(BasePaginationResponse<Item>.self, from: data)
+        return decode(data)
     }
+}
+
+/// A decoded page, independent of the envelope type.
+private struct Page<Item> {
+    var items: [Item]
+    /// Takes the URL the page was loaded from
+    var nextURL: (String) -> String?
 }

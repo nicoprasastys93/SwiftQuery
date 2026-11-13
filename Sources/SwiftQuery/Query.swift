@@ -3,7 +3,7 @@
 //  SwiftQuery
 //
 //  Swift take on useQuery from @tanstack/react-query for a single resource
-//  (response shaped like BaseResponse<Item>). Handles refetch,
+//  (BaseResponse<Item> by default, any QueryEnvelope via `envelope:`). Handles refetch,
 //  stale-while-revalidate via QueryCache and request cancellation.
 //
 
@@ -44,6 +44,7 @@ public final class Query<Item: Decodable> {
     private let url: () -> String?
     private let parameters: AnyEncodable?
     private let cacheKey: String?
+    private let decode: (Data) -> Item?
     private var request: QueryCancellable?
     /// Invalidates in-flight responses after refetch / reset / cancel
     private var generation = 0
@@ -52,12 +53,19 @@ public final class Query<Item: Decodable> {
     ///   - url: Endpoint URL, evaluated on every fetch / refetch.
     ///   - parameters: Query parameters.
     ///   - cacheKey: When set, the response is persisted in the cache and shown instantly on the next `fetch()`.
+    ///   - envelope: Shape of the response body, e.g. `Bare<Item>.self` when there is no wrapper.
     ///   - client: Networking and cache provider.
-    public init(url: @escaping () -> String?, parameters: Encodable? = nil, cacheKey: String? = nil, client: QueryClient = .shared) {
+    public init<Envelope: QueryEnvelope>(url: @escaping () -> String?, parameters: Encodable? = nil, cacheKey: String? = nil, envelope: Envelope.Type, client: QueryClient = .shared) where Envelope.Item == Item {
         self.client = client
         self.url = url
         self.parameters = parameters.map(AnyEncodable.init)
         self.cacheKey = cacheKey.map { "query.\($0)" }
+        self.decode = { try? JSONDecoder().decode(Envelope.self, from: $0).item }
+    }
+
+    /// Response shaped like `BaseResponse<Item>`.
+    public convenience init(url: @escaping () -> String?, parameters: Encodable? = nil, cacheKey: String? = nil, client: QueryClient = .shared) {
+        self.init(url: url, parameters: parameters, cacheKey: cacheKey, envelope: BaseResponse<Item>.self, client: client)
     }
     deinit {
         request?.cancel()
@@ -132,7 +140,7 @@ private extension Query {
             newState.isRefetching = false
 
             if let code = response.statusCode, (200..<300).contains(code) {
-                if let data = response.data, let item = try? JSONDecoder().decode(BaseResponse<Item>.self, from: data).data {
+                if let data = response.data, let item = self.decode(data) {
                     if let cacheKey = self.cacheKey {
                         self.client.cache.set(data, forKey: cacheKey)
                     }
@@ -161,6 +169,6 @@ private extension Query {
 
     func cachedItem() -> Item? {
         guard let cacheKey = cacheKey, let data = client.cache.data(forKey: cacheKey) else { return nil }
-        return try? JSONDecoder().decode(BaseResponse<Item>.self, from: data).data
+        return decode(data)
     }
 }

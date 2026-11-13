@@ -3,6 +3,7 @@ import XCTest
 
 private struct Todo: Decodable, Equatable { var id: Int }
 private struct Payload: Encodable { var name: String }
+private final class TodoResponse: BaseResponse<Todo> {}
 
 private final class MockNetworking: QueryNetworking {
     var responses: [QueryResponse] = []
@@ -80,7 +81,8 @@ final class SwiftQueryTests: XCTestCase {
         XCTAssertEqual(m.state.error?.message, "bad")
     }
 
-    func testMutationWithoutEnvelope() {
+    @available(*, deprecated)
+    func testMutationWithoutEnvelopeLegacyBool() {
         let net = MockNetworking()
         net.responses = [QueryResponse(statusCode: 200, data: json(#"{"id":5}"#))]
         let m = Mutation<Todo, Payload>(url: { "https://x.test/m" }, envelope: false, client: client(net))
@@ -99,7 +101,7 @@ final class SwiftQueryTests: XCTestCase {
         }
         let net = MockNetworking()
         net.responses = [QueryResponse(statusCode: 200, data: json(#"{"id":7}"#))]
-        let m = Mutation<Todo, Upload>(url: { "https://x.test/u" }, method: "POST", envelope: false, encoding: .multipart, client: client(net))
+        let m = Mutation<Todo, Upload>(url: { "https://x.test/u" }, method: "POST", envelope: Bare<Todo>.self, encoding: .multipart, client: client(net))
         m.mutate(Upload(name: "n"))
         XCTAssertTrue(m.state.isSuccess)
         let sent = net.requests.last
@@ -107,6 +109,113 @@ final class SwiftQueryTests: XCTestCase {
         XCTAssertNil(sent?.parameters)
         XCTAssertEqual(sent?.multipartParts.map(\.name), ["name", "photo"])
         XCTAssertEqual(sent?.multipartParts.last?.fileName, "a.jpg")
+    }
+
+    func testMutationBareEnvelope() {
+        let net = MockNetworking()
+        net.responses = [QueryResponse(statusCode: 200, data: json(#"{"id":6}"#))]
+        let m = Mutation<Todo, Payload>(url: { "https://x.test/m" }, envelope: Bare<Todo>.self, client: client(net))
+        m.mutate(Payload(name: "a"))
+        XCTAssertEqual(m.state.data, Todo(id: 6))
+    }
+
+    func testQueryBareEnvelopeAndCache() {
+        let net = MockNetworking()
+        let client = client(net)
+        net.responses = [QueryResponse(statusCode: 200, data: json(#"[{"id":1},{"id":2}]"#))]
+        let q = Query<[Todo]>(url: { "https://x.test/a" }, cacheKey: "list", envelope: Bare<[Todo]>.self, client: client)
+        q.fetch()
+        XCTAssertEqual(q.state.data, [Todo(id: 1), Todo(id: 2)])
+
+        net.responses = [QueryResponse(statusCode: 500, data: nil)]
+        let q2 = Query<[Todo]>(url: { "https://x.test/a" }, cacheKey: "list", envelope: Bare<[Todo]>.self, client: client)
+        q2.fetch()
+        XCTAssertEqual(q2.state.data?.count, 2)
+    }
+
+    func testQueryCustomEnvelope() {
+        struct Wrapped<T: Decodable>: QueryEnvelope {
+            let payload: T?
+            var item: T? { payload }
+        }
+        let net = MockNetworking()
+        net.responses = [QueryResponse(statusCode: 200, data: json(#"{"success":true,"payload":{"id":3}}"#))]
+        let q = Query<Todo>(url: { "https://x.test/a" }, envelope: Wrapped<Todo>.self, client: client(net))
+        q.fetch()
+        XCTAssertEqual(q.state.data, Todo(id: 3))
+    }
+
+    func testInfiniteQueryCursorEnvelope() {
+        struct CursorPage<T: Decodable>: QueryPageEnvelope {
+            let results: [T]
+            let next_cursor: String?
+            var items: [T] { results }
+            func nextPageURL(currentURL: String) -> String? {
+                next_cursor.map { queryURL(currentURL, setting: "cursor", to: $0) }
+            }
+        }
+        let net = MockNetworking()
+        net.responses = [
+            QueryResponse(statusCode: 200, data: json(#"{"results":[{"id":1}],"next_cursor":"abc"}"#)),
+            QueryResponse(statusCode: 200, data: json(#"{"results":[{"id":2}],"next_cursor":null}"#))
+        ]
+        let q = InfiniteQuery<Todo>(firstPageURL: { "https://x.test/list?cursor=start&q=a" }, envelope: CursorPage<Todo>.self, client: client(net))
+        q.fetch()
+        XCTAssertTrue(q.state.hasNextPage)
+        q.fetchNextPage()
+        XCTAssertEqual(net.requests.last?.url, "https://x.test/list?q=a&cursor=abc")
+        XCTAssertEqual(q.state.items, [Todo(id: 1), Todo(id: 2)])
+        XCTAssertFalse(q.state.hasNextPage)
+    }
+
+    func testInfiniteQueryBareList() {
+        let net = MockNetworking()
+        net.responses = [QueryResponse(statusCode: 200, data: json(#"[{"id":1},{"id":2}]"#))]
+        let q = InfiniteQuery<Todo>(firstPageURL: { "https://x.test/all" }, envelope: BareList<Todo>.self, client: client(net))
+        q.fetch()
+        XCTAssertEqual(q.state.items.count, 2)
+        XCTAssertFalse(q.state.hasNextPage)
+    }
+
+    func testQueryWithBaseResponseSubclass() {
+        let net = MockNetworking()
+        net.responses = [QueryResponse(statusCode: 200, data: json(#"{"type":"success","data":{"id":4}}"#))]
+        let q = Query<Todo>(url: { "https://x.test/a" }, envelope: TodoResponse.self, client: client(net))
+        q.fetch()
+        XCTAssertEqual(q.state.data, Todo(id: 4))
+    }
+
+    func testInfiniteQueryPageNumberEnvelope() {
+        struct NumberedPage<T: Decodable>: QueryPageEnvelope {
+            let data: [T]
+            let page: Int
+            let total_pages: Int
+            var items: [T] { data }
+            func nextPageURL(currentURL: String) -> String? {
+                page < total_pages ? queryURL(currentURL, setting: "page", to: "\(page + 1)") : nil
+            }
+        }
+        let net = MockNetworking()
+        net.responses = [
+            QueryResponse(statusCode: 200, data: json(#"{"data":[{"id":1}],"page":1,"total_pages":2}"#)),
+            QueryResponse(statusCode: 200, data: json(#"{"data":[{"id":2}],"page":2,"total_pages":2}"#))
+        ]
+        let q = InfiniteQuery<Todo>(firstPageURL: { "https://x.test/products" }, envelope: NumberedPage<Todo>.self, client: client(net))
+        q.fetch()
+        q.fetchNextPage()
+        XCTAssertEqual(net.requests.last?.url, "https://x.test/products?page=2")
+        XCTAssertEqual(q.state.items, [Todo(id: 1), Todo(id: 2)])
+        XCTAssertFalse(q.state.hasNextPage)
+    }
+
+    func testMutationNoContent() {
+        struct Empty: Decodable {}
+        let net = MockNetworking()
+        net.responses = [QueryResponse(statusCode: 204, data: Data())]
+        let m = Mutation<Empty, Payload>(url: { "https://x.test/d" }, method: "DELETE", client: client(net))
+        m.mutate(Payload(name: "a"))
+        XCTAssertTrue(m.state.isSuccess)
+        XCTAssertNil(m.state.data)
     }
 
     func testMultipartBody() {
