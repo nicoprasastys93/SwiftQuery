@@ -3,7 +3,8 @@
 //  SwiftQuery
 //
 //  Swift take on useMutation from @tanstack/react-query
-//  (BaseResponse<Item> by default, any QueryEnvelope via `envelope:`, e.g. `Bare<Item>.self`).
+//  (BaseResponse<Item> by default, any QueryEnvelope via `envelope:`, e.g. `Bare<Item>.self`,
+//  or a raw body such as a file via `decode:`).
 //  Nothing runs until `mutate(_:)` is called.
 //
 
@@ -55,18 +56,31 @@ public final class Mutation<Item: Decodable, Variables: Encodable> {
     /// Invalidates an in-flight response after reset
     private var generation = 0
 
+    /// Success body read by `decode` instead of JSON, e.g. a file (xlsx, pdf, image):
+    /// `Mutation<Data, Params>(url: ..., method: "GET", decode: { $0 })` gives the raw bytes as `state.data`.
+    /// The whole body is kept in memory and there is no progress. Error bodies are still read as `{ "type", "message" }`.
+    /// - Parameters:
+    ///   - url: Endpoint URL, evaluated on every `mutate`.
+    ///   - method: HTTP method, POST by default.
+    ///   - encoding: `.json` (default) or `.multipart`. Multipart requires `Variables` to conform to `QueryMultipartEncodable`.
+    ///   - client: Networking provider.
+    ///   - decode: Turns the 2xx body into `Item`.
+    public init(url: @escaping () -> String?, method: String = "POST", encoding: QueryBodyEncoding = .json, client: QueryClient = .shared, decode: @escaping (Data) -> Item?) {
+        self.client = client
+        self.url = url
+        self.method = method
+        self.decode = decode
+        self.encoding = encoding
+    }
+
     /// - Parameters:
     ///   - url: Endpoint URL, evaluated on every `mutate`.
     ///   - method: HTTP method, POST by default.
     ///   - envelope: Shape of the success body, e.g. `Bare<Item>.self` when the body is the `Item` itself.
     ///   - encoding: `.json` (default) or `.multipart`. Multipart requires `Variables` to conform to `QueryMultipartEncodable`.
     ///   - client: Networking provider.
-    public init<Envelope: QueryEnvelope>(url: @escaping () -> String?, method: String = "POST", envelope: Envelope.Type, encoding: QueryBodyEncoding = .json, client: QueryClient = .shared) where Envelope.Item == Item {
-        self.client = client
-        self.url = url
-        self.method = method
-        self.decode = { try? JSONDecoder().decode(Envelope.self, from: $0).item }
-        self.encoding = encoding
+    public convenience init<Envelope: QueryEnvelope>(url: @escaping () -> String?, method: String = "POST", envelope: Envelope.Type, encoding: QueryBodyEncoding = .json, client: QueryClient = .shared) where Envelope.Item == Item {
+        self.init(url: url, method: method, encoding: encoding, client: client, decode: { try? JSONDecoder().decode(Envelope.self, from: $0).item })
     }
 
     /// Success body shaped like `BaseResponse<Item>`.

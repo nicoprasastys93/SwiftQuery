@@ -91,6 +91,23 @@ final class SwiftQueryTests: XCTestCase {
         XCTAssertEqual(m.state.data, Todo(id: 5))
     }
 
+    func testMutationRawData() {
+        let net = MockNetworking()
+        let file = Data([0x50, 0x4B, 0x03, 0x04, 0xFF, 0x00])   // not JSON (xlsx/zip header)
+        net.responses = [
+            QueryResponse(statusCode: 200, data: file),
+            QueryResponse(statusCode: 404, data: json(#"{"type":"not_found","message":"gone"}"#))
+        ]
+        let m = Mutation<Data, Payload>(url: { "https://x.test/f" }, method: "GET", client: client(net), decode: { $0 })
+        m.mutate(Payload(name: "a"))
+        XCTAssertTrue(m.state.isSuccess)
+        XCTAssertEqual(m.state.data, file)
+        XCTAssertEqual(net.requests.last?.method, "GET")
+        m.mutate(Payload(name: "b"))
+        XCTAssertTrue(m.state.isError)
+        XCTAssertEqual(m.state.error?.message, "gone")
+    }
+
     func testMutationMultipart() {
         struct Upload: Encodable, QueryMultipartEncodable {
             var name: String

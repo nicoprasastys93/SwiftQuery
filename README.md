@@ -94,6 +94,7 @@ By default `Query` / `Mutation` read `{ "type", "message", "data": {...} }` (`Ba
 | 8 | Other wrapper `{ "success", "payload": {...} }` | your own `QueryEnvelope` | ✓ | | ✓ |
 | 9 | `204 No Content` / empty body | any | | | ✓ |
 | 10 | Error body (non-2xx) | fixed: `{ "type", "message" }` | | | ✓ |
+| 11 | Raw body / file (xlsx, pdf, image, ...) | `decode: { $0 }` instead of `envelope:` | | | ✓ |
 
 #### 1. Wrapped object (default)
 
@@ -259,6 +260,18 @@ For a non-2xx response `Mutation` reads `type` and `message` from the body, what
 `Query` / `InfiniteQuery` only expose `state.statusCode` on failure; the error body is not decoded. Other error shapes are not supported yet.
 
 `Mutation(envelope: false)` still compiles but is deprecated: use `envelope: Bare<Item>.self` (or omit `envelope:` for `true`).
+
+#### 11. Raw body / file
+
+For a body that is not JSON, such as a downloaded file, pass `decode:` instead of `envelope:`. With `Item == Data` the bytes come back as they are, so any file type works; the app picks the file name when it saves it:
+
+```swift
+let download = Mutation<Data, ParamExportModel>(url: { ExportService.url() }, method: "GET", decode: { $0 })
+// state.status == .success → state.data is the file
+try download.state.data?.write(to: documents.appendingPathComponent("Report.xlsx"))
+```
+
+The whole body is kept in memory and there is no download progress. Error bodies are still read as in 10.
 
 ### File upload (multipart/form-data)
 
