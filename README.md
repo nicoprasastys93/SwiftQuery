@@ -64,6 +64,100 @@ struct MMKVQueryCache: QueryCache {
 
 ## Usage
 
+Every type exposes its state as `state` (`@Published`) and `statePublisher`: subscribe, then call an action.
+URLs are closures, evaluated on every request. The defaults read `BaseResponse` / `BasePaginationResponse`; for other bodies see [Response shapes](#response-shapes).
+Every instance also takes `client:` to use a custom `QueryClient` (handy in tests).
+
+### `Query<Item>`
+
+Like `useQuery`: one resource, loaded with `fetch()` and reloaded with `refetch()`.
+
+```swift
+Query<Item>(
+    url: () -> String?,          // endpoint, evaluated on every fetch / refetch
+    parameters: Encodable? = nil,
+    cacheKey: String? = nil,     // persist the response, show it instantly on the next fetch()
+    envelope: ... = BaseResponse<Item>.self,
+    client: QueryClient = .shared
+)
+```
+
+| Action | Does |
+| --- | --- |
+| `fetch()` | Initial load. No-op if data is already loaded or loading. With `cacheKey`, the cached value is shown first (`isPlaceholderData`) while the network request runs |
+| `refetch()` | Reload, keeping the current data visible (pull to refresh) |
+| `cancel()` | Cancel the in-flight request, keep the data |
+| `reset(clearCache: Bool = false)` | Cancel and drop all data, and the cache entry when `clearCache` is true (e.g. logout) |
+
+| `state.` | Type | Meaning |
+| --- | --- | --- |
+| `data` | `Item?` | Last loaded value |
+| `status` | `.idle` / `.loading` / `.success` / `.error` | `.loading` = first load with nothing to show; `.error` = failed with nothing to show |
+| `statusCode` | `Int?` | HTTP status of the last response |
+| `isFetching` | `Bool` | Any request in flight |
+| `isRefetching` | `Bool` | Reloading while showing loaded data |
+| `isPlaceholderData` | `Bool` | `data` comes from the cache, network still pending |
+
+A failed refetch keeps the existing `data` (status stays `.success`), so the screen does not blank out.
+
+```swift
+final class ProfileViewController: UIViewController {
+    private let query = Query<User>(url: { UserService.detailURL() }, cacheKey: "profile")
+    private var cancellables = Set<AnyCancellable>()
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        query.statePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.spinner.isHidden = state.status != .loading
+                self?.refreshControl.isRefreshing = state.isRefetching
+                self?.errorView.isHidden = state.status != .error
+                if let user = state.data { self?.render(user) }
+            }
+            .store(in: &cancellables)
+        query.fetch()
+    }
+
+    @objc private func didPullToRefresh() { query.refetch() }
+}
+```
+
+### `InfiniteQuery<Item>`
+
+Like `useInfiniteQuery`: a paged list. Pages are kept in memory and appended by `fetchNextPage()`.
+
+```swift
+InfiniteQuery<Item>(
+    firstPageURL: () -> String?, // evaluated on every fetch / refetch; later pages come from the response
+    parameters: Encodable? = nil, // sent with every page
+    cacheKey: String? = nil,      // persist the first page, show it instantly on the next fetch()
+    envelope: ... = BasePaginationResponse<Item>.self,
+    client: QueryClient = .shared
+)
+```
+
+| Action | Does |
+| --- | --- |
+| `fetch()` | Initial load of page one. No-op if already loaded or loading |
+| `refetch()` | Reload from page one, keeping the current items visible (pull to refresh) |
+| `fetchNextPage()` | Load the following page. No-op when `!hasNextPage` or a request is in flight |
+| `cancel()` | Cancel the in-flight request, keep the pages |
+| `reset(clearCache: Bool = false)` | Cancel and drop all pages, and the cache entry when `clearCache` is true |
+
+| `state.` | Type | Meaning |
+| --- | --- | --- |
+| `items` | `[Item]` | All pages flattened |
+| `pages` | `[[Item]]` | Items per page |
+| `isEmpty` | `Bool` | Loaded successfully with no items |
+| `status` | `.idle` / `.loading` / `.success` / `.error` | Same as `Query` |
+| `statusCode` | `Int?` | HTTP status of the last response |
+| `hasNextPage` | `Bool` | The last page pointed to a next one |
+| `isFetching` | `Bool` | Any request in flight |
+| `isFetchingNextPage` | `Bool` | Loading a following page (footer spinner) |
+| `isRefetching` | `Bool` | Reloading page one while showing items |
+| `isPlaceholderData` | `Bool` | Items come from the cache, network still pending |
+
 ```swift
 func useEventQuery() -> InfiniteQuery<EventModel> {
     InfiniteQuery<EventModel>(
@@ -73,9 +167,81 @@ func useEventQuery() -> InfiniteQuery<EventModel> {
     )
 }
 
-let query = useEventQuery()
-query.statePublisher.sink { state in /* state.items, state.isFetching, ... */ }
-query.fetch()
+final class EventListViewController: UITableViewController {
+    private let query = useEventQuery()
+    private var cancellables = Set<AnyCancellable>()
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        query.statePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.tableView.reloadData()
+                self?.refreshControl?.isRefreshing = state.isRefetching
+                self?.footerSpinner.isHidden = !state.isFetchingNextPage
+                self?.emptyView.isHidden = !state.isEmpty
+            }
+            .store(in: &cancellables)
+        query.fetch()
+    }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        query.state.items.count
+    }
+
+    override func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+        if indexPath.row == query.state.items.count - 1 { query.fetchNextPage() }
+    }
+}
+```
+
+### `Mutation<Item, Variables>`
+
+Like `useMutation`: POST / PUT / PATCH / DELETE. Nothing runs until `mutate(_:)`.
+
+```swift
+Mutation<Item, Variables>(
+    url: () -> String?,               // evaluated on every mutate
+    method: String = "POST",
+    envelope: ... = BaseResponse<Item>.self,  // or decode: { ... } for a raw body
+    encoding: QueryBodyEncoding = .json,      // or .multipart
+    client: QueryClient = .shared
+)
+```
+
+| Action | Does |
+| --- | --- |
+| `mutate(_ variables: Variables)` | Send the request with `variables` as the body. Ignored while a previous call is pending (no double submit) |
+| `reset()` | Cancel any in-flight request and go back to `.idle` |
+
+| `state.` | Type | Meaning |
+| --- | --- | --- |
+| `data` | `Item?` | Decoded success body (`nil` for an empty body) |
+| `error` | `MutationError?` | `statusCode`, `type`, `message` of a non-2xx response |
+| `status` | `.idle` / `.pending` / `.success` / `.error` | |
+| `isPending` / `isSuccess` / `isError` | `Bool` | Shorthands for `status` |
+
+```swift
+final class EditProfileViewController: UIViewController {
+    private let mutation = Mutation<User, UserParams>(url: { UserService.updateURL() }, method: "PUT")
+    private var cancellables = Set<AnyCancellable>()
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        mutation.statePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.saveButton.isEnabled = !state.isPending
+                if state.isSuccess { self?.navigationController?.popViewController(animated: true) }
+                if state.isError { self?.showAlert(state.error?.message ?? "Something went wrong") }
+            }
+            .store(in: &cancellables)
+    }
+
+    @objc private func didTapSave() {
+        mutation.mutate(UserParams(name: nameField.text ?? "", email: emailField.text ?? ""))
+    }
+}
 ```
 
 ### Response shapes
@@ -292,6 +458,4 @@ let mutation = Mutation<ProfileModel, ParamProfileUpdateModel>(url: { ProfileSer
 
 `QueryMultipartPart(name:value:)` returns `nil` for a `nil` value, so optional fields are skipped with `compactMap`.
 Custom `QueryNetworking` implementations must handle `request.encoding == .multipart` by sending `request.multipartParts`.
-
-Every instance also takes `client:` to use a custom `QueryClient` (handy in tests).
 
